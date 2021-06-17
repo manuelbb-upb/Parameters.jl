@@ -102,6 +102,10 @@ end
 decolon2(a::Expr) = (@assert a.head==:(::);  a.args[1])
 decolon2(a::Symbol) = a
 
+# Transforms :(a::b) -> b
+decolon_type(a::Expr) = (@assert a.head==:(::);  a.args[2])
+decolon_type(a::Symbol) = nothing
+
 # Keep the ::T of the args if T ∈ typparas,
 # leave symbols as is, drop field-doc-strings.
 function keep_only_typparas(args, typparas)
@@ -579,6 +583,74 @@ function with_kw(typedef, mod::Module, withshow=true)
         end
     end
 
+    ## check_params function
+    ### Build a dict mapping the index of each assertion to an array 
+    ### of fieldnames that occur within.
+    asserts_fieldnames = Dict( i => Symbol[] for i=eachindex(asserts) )
+    for k in args 
+        for (i,assertion) in enumerate(asserts)
+            if symbol_in( k, assertion )
+                push!( asserts_fieldnames[i], k )
+            end
+        end
+    end
+    
+    ### dict mapping fieldname -> type 
+    fieldname_types = Dict{Symbol,Any}()
+    for field_def in fielddefs.args 
+        if field_def isa Symbol || field_def isa Expr 
+            s = decolon2( field_def )
+            t = eval( decolon_type( field_def ) )
+            fieldname_types[s] = t
+        end
+    end
+    
+    ### Expr for `check_params` function 
+    ### First, check types, then assertions
+    check_params_fn = quote 
+        function check_params( ::Type{$tn}; kwargs... )
+            bad_params = Symbol[]
+            for (k,v) in kwargs 
+                if haskey($fieldname_types, k) && ! isnothing($fieldname_types[k])
+                    T = $fieldname_types[k]
+                    V = typeof(v)
+                    if T != V && isempty( methods(convert, [Type{T}, V]) )
+                        @warn "Cannot convert parameter `$k` of type `$V` to type `$T`."
+                        push!(bad_params, k)
+                    end
+                end
+            end
+
+            for (i,assertion) in enumerate( $asserts )
+                vars = $asserts_fieldnames[i]
+                assert_ex = Expr( :let, 
+                    Expr(:block, [ Expr(:(=), k, v) for (k,v) in kwargs if k in vars ]...),
+                    Expr(:block, assertion)
+                )
+                try    
+                    eval(assert_ex)
+                catch e
+                    @warn(e)
+                    push!(bad_params, vars...)
+                end
+            end
+
+            return bad_params
+        end
+    end
+
+    ## Expr for `default_param_value` function
+    default_params = quote 
+        function default_param_value( ::Type{$tn}, field :: Symbol )
+            for (i,k) in enumerate($kws)
+                if k[1] == field
+                    return eval(k[2])
+                end
+            end
+            return nothing
+        end
+    end
+
     # Finish up
     quote
         Base.@__doc__ $typ
@@ -590,6 +662,8 @@ function with_kw(typedef, mod::Module, withshow=true)
             esc($Parameters._unpack(ex, $unpack_vars))
         end
         $pack_macros
+        $check_params_fn
+        $default_params
         $tn
     end
 end
