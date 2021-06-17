@@ -583,6 +583,18 @@ function with_kw(typedef, mod::Module, withshow=true)
         end
     end
 
+    ## Expr for `default_param_value` function
+    default_params = quote 
+        function default_param_value( ::Type{$tn}, field :: Symbol )
+            for (i,k) in enumerate($kws)
+                if k[1] == field
+                    return eval(k[2])
+                end
+            end
+            return nothing
+        end
+    end
+
     ## check_params function
     ### Build a dict mapping the index of each assertion to an array 
     ### of fieldnames that occur within.
@@ -608,7 +620,7 @@ function with_kw(typedef, mod::Module, withshow=true)
     ### Expr for `check_params` function 
     ### First, check types, then assertions
     check_params_fn = quote 
-        function check_params( ::Type{$tn}; kwargs... )
+        function check_types( ::Type{$tn}; kwargs... )
             bad_params = Symbol[]
             for (k,v) in kwargs 
                 if haskey($fieldname_types, k) && ! isnothing($fieldname_types[k])
@@ -620,34 +632,32 @@ function with_kw(typedef, mod::Module, withshow=true)
                     end
                 end
             end
+            return unique(bad_params)
+        end
+
+        function check_assertions( ::Type{$tn}; kwargs... )
+            bad_params = Symbol[]
 
             for (i,assertion) in enumerate( $asserts )
-                vars = $asserts_fieldnames[i]
-                assert_ex = Expr( :let, 
-                    Expr(:block, [ Expr(:(=), k, v) for (k,v) in kwargs if k in vars ]...),
-                    Expr(:block, assertion)
-                )
-                try    
-                    eval(assert_ex)
-                catch e
-                    @warn(e)
-                    push!(bad_params, vars...)
+                assert_vars = $asserts_fieldnames[i]
+
+                if !isempty(assert_vars)
+                    local_args = Dict( k in keys(kwargs) ? k => kwargs[k] : k => default_param_value( $tn, k ) for k in assert_vars )
+                 
+                    assert_ex = Expr( :let, 
+                        Expr(:block, [ Expr(:(=), k, v) for (k,v) in local_args ]...),
+                        Expr(:block, assertion)
+                    )
+                    try    
+                        eval(assert_ex)
+                    catch e
+                        @warn("Assertion fail:\n$(sprint(showerror,e))")
+                        push!(bad_params, assert_vars...)
+                    end
                 end
             end
 
             return unique(bad_params)
-        end
-    end
-
-    ## Expr for `default_param_value` function
-    default_params = quote 
-        function default_param_value( ::Type{$tn}, field :: Symbol )
-            for (i,k) in enumerate($kws)
-                if k[1] == field
-                    return eval(k[2])
-                end
-            end
-            return nothing
         end
     end
 
@@ -662,8 +672,8 @@ function with_kw(typedef, mod::Module, withshow=true)
             esc($Parameters._unpack(ex, $unpack_vars))
         end
         $pack_macros
-        $check_params_fn
         $default_params
+        $check_params_fn
         $tn
     end
 end
