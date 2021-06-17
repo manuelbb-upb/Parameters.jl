@@ -635,7 +635,7 @@ function with_kw(typedef, mod::Module, withshow=true)
                 end
             end
 
-            return bad_params
+            return unique(bad_params)
         end
     end
 
