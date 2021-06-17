@@ -102,7 +102,7 @@ end
 decolon2(a::Expr) = (@assert a.head==:(::);  a.args[1])
 decolon2(a::Symbol) = a
 
-# Transforms :(a::b) -> b
+# Transforms :(a::b) -> :b
 decolon_type(a::Expr) = (@assert a.head==:(::);  a.args[2])
 decolon_type(a::Symbol) = nothing
 
